@@ -72,6 +72,29 @@ th{color:#aaa;font-weight:600}
 .admin-msg{min-height:20px;color:#9ee39e;font-size:12px;margin-top:8px}
 .admin-field{margin:10px 0}.admin-field label{display:block;font-size:12px;color:#aaa;margin-bottom:6px}.admin-field input{margin:0}
 .close-admin{float:right;background:transparent!important;border:0!important;font-size:20px;padding:0!important}
+
+.chart-scroll{overflow-x:auto;padding-bottom:4px}
+.chart-box{min-width:620px}
+.chart-title{font-size:12px;color:#aaa;margin-bottom:10px}
+.hbar{display:grid;grid-template-columns:52px 1fr 90px;align-items:center;gap:8px;margin:7px 0;font-size:12px}
+.hbar-label{text-align:right;color:#ccc}
+.hbar-track{height:20px;background:#24242a;border-radius:6px;overflow:hidden}
+.hbar-fill{height:100%;background:linear-gradient(90deg,#7f1722,#e24b5d);border-radius:6px;min-width:2px}
+.hbar-value{text-align:right;color:#fff;font-variant-numeric:tabular-nums}
+.data-table{width:100%;border-collapse:collapse;font-size:12px;min-width:520px}
+.data-table th,.data-table td{padding:9px 8px;border-bottom:1px solid #2b2b31;text-align:right}
+.data-table th:first-child,.data-table td:first-child{text-align:left}
+.data-table th{color:#aaa;background:#17171b;position:sticky;top:0}
+.data-table td:first-child{font-weight:800;color:#fff}
+.rank-badge{display:inline-block;padding:3px 7px;border-radius:7px;background:#27272d}
+.admin-note b{color:#fff}
+.role-badge{display:inline-block;padding:4px 8px;border-radius:8px;background:#302126;color:#ffb2bc;font-size:11px}
+.pw-list{display:grid;gap:7px;margin:10px 0}
+.pw-item{display:flex;align-items:center;justify-content:space-between;gap:8px;background:#1b1b20;border:1px solid #303038;border-radius:10px;padding:9px 10px}
+.pw-item code{font-size:13px;color:#fff}
+.pw-item button{background:#352027;color:#ffb2bc;border:1px solid #66313b;border-radius:7px;padding:5px 8px;cursor:pointer}
+
+.line-chart-wrap{width:100%;}.svg-scroll{width:100%;overflow-x:auto;padding:8px 0}.svg-scroll svg{display:block;width:100%;min-width:680px;height:auto}.gridline{stroke:rgba(255,255,255,.1);stroke-width:1}.axistext{fill:#aaa;font-size:12px}.linepoly{fill:none;stroke:#ff4d6d;stroke-width:3;stroke-linecap:round;stroke-linejoin:round}.point{fill:#ff4d6d;stroke:#111;stroke-width:2}
 </style>
 </head>
 <body>
@@ -125,6 +148,26 @@ th{color:#aaa;font-weight:600}
 </div>
 
 <div class="section">
+<h2>📈 月別平均グラフ</h2>
+<div class="content"><div class="chart-scroll" id="monthChart"></div></div>
+</div>
+
+<div class="section">
+<h2>📊 曜日別平均グラフ</h2>
+<div class="content"><div class="chart-scroll" id="weekdayChart"></div></div>
+</div>
+
+<div class="section">
+<h2>📈 日別平均・折れ線グラフ</h2>
+<div class="content"><div class="line-chart-wrap" id="lineChart"></div></div>
+</div>
+
+<div class="section">
+<h2>📋 ランク別平均一覧</h2>
+<div class="content"><div class="table-wrap"><table class="data-table" id="rankTable"></table></div></div>
+</div>
+
+<div class="section">
 <h2>📊 ランク比較</h2>
 <div class="content" id="rankCompare"></div>
 </div>
@@ -157,12 +200,28 @@ async function deriveKey(password, saltB64, iterations){
 
 let DATA;
 
-const DEFAULT_PASSWORD = 'milklivepore0611';
-const DATA_KEY = 'star_meter_analysis_data_v2';
-const PW_KEY = 'star_meter_analysis_password_v2';
+const DEFAULT_ADMIN_PASSWORD = 'milklivepore0611';
+const DEFAULT_VIEWER_PASSWORDS = ['milklive'];
+const DATA_KEY = 'star_meter_analysis_data_v3';
+const AUTH_KEY = 'star_meter_analysis_auth_v3';
+const OLD_PW_KEY = 'star_meter_analysis_password_v2';
 
-function currentPassword(){
-  return localStorage.getItem(PW_KEY) || DEFAULT_PASSWORD;
+let SESSION_ROLE = null;
+
+function getAuth(){
+  try{
+    const saved=JSON.parse(localStorage.getItem(AUTH_KEY));
+    if(saved && typeof saved.admin==='string' && Array.isArray(saved.viewers)) return saved;
+  }catch(e){}
+  const old=localStorage.getItem(OLD_PW_KEY);
+  return {admin: old || DEFAULT_ADMIN_PASSWORD, viewers:[...DEFAULT_VIEWER_PASSWORDS]};
+}
+function saveAuth(a){ localStorage.setItem(AUTH_KEY,JSON.stringify(a)); }
+function authenticate(password){
+  const a=getAuth();
+  if(password===a.admin) return 'admin';
+  if(a.viewers.includes(password)) return 'viewer';
+  return null;
 }
 function savedData(){
   try { return JSON.parse(localStorage.getItem(DATA_KEY)) || DATA_SOURCE; }
@@ -171,174 +230,122 @@ function savedData(){
 function validateData(d){
   if(!d || !Array.isArray(d.ranks) || !Array.isArray(d.months) || !Array.isArray(d.weekdays)) return false;
   if(!d.overall || !d.month || !d.weekday || !d.day) return false;
-  return d.ranks.every(r => d.overall[r] && d.month[r] && d.weekday[r] && d.day[r]);
+  return d.ranks.every(r=>d.overall[r] && d.month[r] && d.weekday[r] && d.day[r]);
 }
-async function tryUnlock(password){
-  const btn = document.getElementById('pwBtn');
-  const err = document.getElementById('pwErr');
-  btn.disabled = true;
-  err.textContent = '';
-  try {
-    if (password !== currentPassword()) throw new Error('PASSWORD');
-    DATA = savedData();
+function fmt(v){ return v == null ? "-" : Math.round(v).toLocaleString("ja-JP"); }
+function pct(v,b){ return b ? Math.round((v/b-1)*100) : 0; }
+function rankLabel(r){ return r.replace(/(\d)$/,"+$1"); }
+
+function tryUnlock(password){
+  const btn=document.getElementById('pwBtn'),err=document.getElementById('pwErr');
+  btn.disabled=true; err.textContent='';
+  try{
+    const role=authenticate(password);
+    if(!role) throw new Error('PASSWORD');
+    DATA=savedData();
     if(!validateData(DATA)) throw new Error('DATA');
+    SESSION_ROLE=role;
     initApp();
-    document.getElementById('gate').style.display = 'none';
-    document.getElementById('app').style.display = 'block';
-  } catch (e) {
-    console.error('Unlock error:', e);
-    err.textContent = e.message === 'PASSWORD' ? 'パスワードが違います。' : 'データの読み込みに失敗しました。管理画面から元のデータに戻してください。';
-  } finally {
-    btn.disabled = false;
-  }
+    document.getElementById('gate').style.display='none';
+    document.getElementById('app').style.display='block';
+    document.getElementById('adminOpen').style.display=role==='admin'?'block':'none';
+  }catch(e){
+    console.error(e);
+    err.textContent=e.message==='PASSWORD'?'パスワードが違います。':'データの読み込みに失敗しました。';
+  }finally{btn.disabled=false;}
+}
+document.getElementById('pwBtn').addEventListener('click',()=>{const v=document.getElementById('pwInput').value;if(v)tryUnlock(v)});
+document.getElementById('pwInput').addEventListener('keydown',e=>{if(e.key==='Enter')document.getElementById('pwBtn').click()});
+
+function renderLineChart(rk){
+  const dy=DATA.day[rk]||{};
+  const pts=Object.keys(dy).map(k=>({k,v:Number(dy[k])})).filter(x=>Number.isFinite(x.v)).sort((a,b)=>parseInt(a.k)-parseInt(b.k));
+  const el=document.getElementById('lineChart');
+  if(!pts.length){el.innerHTML='<div class="chart-box"><div class="chart-title">日別平均</div><div class="note">表示できる日別データがありません。</div></div>';return;}
+  const W=900,H=330,L=58,R=24,T=28,B=48,iw=W-L-R,ih=H-T-B;
+  const max=Math.max(...pts.map(p=>p.v)), min=Math.min(...pts.map(p=>p.v));
+  const range=(max-min)||1;
+  const x=i=>L+(pts.length===1?iw/2:iw*i/(pts.length-1));
+  const y=v=>T+(max-v)/range*ih;
+  const poly=pts.map((p,i)=>`${x(i).toFixed(1)},${y(p.v).toFixed(1)}`).join(' ');
+  const grid=[0,.25,.5,.75,1].map(t=>{const yy=T+ih*t,val=max-range*t;return `<line x1="${L}" y1="${yy}" x2="${W-R}" y2="${yy}" class="gridline"/><text x="${L-8}" y="${yy+4}" text-anchor="end" class="axistext">${fmt(val)}</text>`}).join('');
+  const labels=pts.map((p,i)=>{if(pts.length>15 && i%Math.ceil(pts.length/10)!==0 && i!==pts.length-1)return '';return `<text x="${x(i)}" y="${H-18}" text-anchor="middle" class="axistext">${p.k}</text>`}).join('');
+  const circles=pts.map((p,i)=>`<circle cx="${x(i)}" cy="${y(p.v)}" r="3.5" class="point"><title>${p.k}: ${fmt(p.v)}</title></circle>`).join('');
+  el.innerHTML=`<div class="chart-box"><div class="chart-title">選択ランクの日別平均推移</div><div class="note">横軸：日付　縦軸：平均値　※データに存在する日だけ表示</div><div class="svg-scroll"><svg viewBox="0 0 ${W} ${H}" role="img" aria-label="日別平均の折れ線グラフ">${grid}<polyline points="${poly}" class="linepoly"/>${circles}${labels}</svg></div></div>`;
 }
 
-document.getElementById('pwBtn').addEventListener('click', () => {
-  const v = document.getElementById('pwInput').value;
-  if (v) tryUnlock(v);
-});
-document.getElementById('pwInput').addEventListener('keydown', (e) => {
-  if (e.key === 'Enter') document.getElementById('pwBtn').click();
-});
+function renderCharts(rk){
+  const mn=DATA.month[rk]||{}, wk=DATA.weekday[rk]||{};
+  const months=DATA.months.map(x=>({k:x,v:mn[x]})).filter(x=>x.v!=null);
+  const weekdays=DATA.weekdays.map(x=>({k:x,v:wk[x]})).filter(x=>x.v!=null);
+  const monthMax=Math.max(1,...months.map(x=>x.v));
+  const weekMax=Math.max(1,...weekdays.map(x=>x.v));
+  document.getElementById('monthChart').innerHTML=
+    '<div class="chart-box"><div class="chart-title">選択ランクの月平均</div>'+
+    months.map(x=>`<div class="hbar"><div class="hbar-label">${x.k}</div><div class="hbar-track"><div class="hbar-fill" style="width:${x.v/monthMax*100}%"></div></div><div class="hbar-value">${fmt(x.v)}</div></div>`).join('')+
+    '</div>';
+  document.getElementById('weekdayChart').innerHTML=
+    '<div class="chart-box"><div class="chart-title">選択ランクの曜日平均</div>'+
+    weekdays.map(x=>`<div class="hbar"><div class="hbar-label">${x.k}</div><div class="hbar-track"><div class="hbar-fill" style="width:${x.v/weekMax*100}%"></div></div><div class="hbar-value">${fmt(x.v)}</div></div>`).join('')+
+    '</div>';
+  const rows=DATA.ranks.map(r=>({r,v:DATA.overall[r]?.overall})).filter(x=>x.v!=null);
+  document.getElementById('rankTable').innerHTML='<thead><tr><th>ランク</th><th>総合平均</th><th>最高値</th><th>最低値</th><th>最も高い曜日</th><th>最も高い日</th></tr></thead><tbody>'+
+    rows.map(x=>{const o=DATA.overall[x.r];return `<tr><td><span class="rank-badge">${rankLabel(x.r)}</span></td><td>${fmt(o.overall)}</td><td>${fmt(o.max)}</td><td>${fmt(o.min)}</td><td>${o.bestWeekday||'-'} ${o.bestWeekdayVal!=null?fmt(o.bestWeekdayVal):''}</td><td>${o.bestDay||'-'} ${o.bestDayVal!=null?fmt(o.bestDayVal):''}</td></tr>`}).join('')+
+    '</tbody>';
+  renderLineChart(rk);
+}
 
 function initApp(){
+  const $=id=>document.getElementById(id);
+  $('rank').innerHTML='';
+  $('month').innerHTML='<option value="all">全期間</option>';
+  DATA.ranks.forEach(r=>$('rank').insertAdjacentHTML('beforeend',`<option value="${r}">${rankLabel(r)}</option>`));
+  DATA.months.forEach(m=>$('month').insertAdjacentHTML('beforeend',`<option value="${m}">${m}</option>`));
 
+  function render(){
+    const rk=$('rank').value,mo=$('month').value;
+    const ov=DATA.overall[rk],base=ov.overall,wk=DATA.weekday[rk],mn=DATA.month[rk],dy=DATA.day[rk];
+    $('overall').textContent=fmt(base); $('count').textContent=ov.count.toLocaleString()+'件';
+    $('maxVal').textContent=fmt(ov.max); $('minVal').textContent=fmt(ov.min);
+    const todayDay=String(new Date().getDate()),todayVal=dy[todayDay],todayPct=todayVal&&base?pct(todayVal,base):null;
+    let level='データ不足',cls='safe',msg='この日のデータが少ないため判断できません。';
+    if(todayVal!=null){if(todayPct>=20){level='🔥 高注意';cls='dangerbadge';msg='過去平均よりかなり高い傾向。'}else if(todayPct>=10){level='⚠️ 注意';cls='warn';msg='過去平均より高めの傾向。'}else{level='○ 通常';cls='safe';msg='過去平均と比べて大きな上振れはありません。'}}
+    $('today').innerHTML=`<div><span class="badge ${cls}">${level}</span></div><div style="margin-top:8px">${msg}</div>${todayVal!=null?`<div class="smallnote">今日の日付の平均：<b>${fmt(todayVal)}</b>（総合平均比 ${todayPct>=0?'+':''}${todayPct}%）</div>`:''}`;
+    const wks=DATA.weekdays.map(d=>({d,v:wk[d]})).filter(x=>x.v!=null).sort((a,b)=>b.v-a.v);
+    $('weekday').innerHTML=wks.map((x,i)=>`<div class="row"><span>${i===0?'🥇 ':i===1?'🥈 ':i===2?'🥉 ':''}${x.d}</span><b>${fmt(x.v)}</b></div>`).join('');
+    $('monthStats').innerHTML=DATA.months.map(m=>`<div class="row"><span>${m}</span><b>${mn[m]!=null?fmt(mn[m]):'-'}</b></div>`).join('');
+    const days=Object.keys(dy).sort((a,b)=>+a-+b);
+    $('days').innerHTML=days.map(i=>{const v=dy[i];const diff=base?pct(v,base):0;const cl=diff>=20?'danger':diff>=10?'high':'';return `<div class="daybox ${cl}"><div class="dayname">${i}日</div><div class="num">${fmt(v)}</div>${diff>=20?'<div>🔥</div>':diff>=10?'<div>⚠️</div>':''}</div>`}).join('');
+    const compare=DATA.ranks.map(r=>({r,v:DATA.overall[r].overall})).filter(x=>x.v!=null).sort((a,b)=>b.v-a.v),max=compare[0]?.v||1;
+    $('rankCompare').innerHTML=compare.map(x=>`<div class="barrow"><b>${rankLabel(x.r)}</b><div class="bar"><div class="fill" style="width:${Math.max(3,x.v/max*100)}%"></div></div><span>${fmt(x.v)}</span></div>`).join('');
+    renderCharts(rk);
+  }
+  $('rank').addEventListener('change',render); $('month').addEventListener('change',render);
+  $('rank').value=DATA.ranks.includes('A1')?'A1':DATA.ranks[0]; render();
 
-const $ = id => document.getElementById(id);
-const fmt = v => v == null ? "-" : Math.round(v).toLocaleString("ja-JP");
-const pct = (v,b) => b ? Math.round((v/b-1)*100) : 0;
-const rankLabel = r => r.replace(/(\d)$/,"+$1");
+  (function admin(){
+    const modal=$('adminModal'),editor=$('dataEditor'),dataMsg=$('dataMsg'),pwMsg=$('pwMsg');
+    const msg=(el,text)=>{el.textContent=text;setTimeout(()=>{if(el.textContent===text)el.textContent=''},3500)};
+    function openAdmin(){if(SESSION_ROLE!=='admin')return;editor.value=JSON.stringify(DATA,null,2);renderPwList();modal.style.display='flex';}
+    $('adminOpen').addEventListener('click',openAdmin); $('adminClose').addEventListener('click',()=>modal.style.display='none');
+    modal.addEventListener('click',e=>{if(e.target===modal)modal.style.display='none'});
+    document.querySelectorAll('.admin-tabs button').forEach(b=>b.addEventListener('click',()=>{document.querySelectorAll('.admin-tabs button').forEach(x=>x.classList.remove('active'));document.querySelectorAll('.admin-panel').forEach(x=>x.classList.remove('active'));b.classList.add('active');$(b.dataset.tab).classList.add('active')}));
+    $('applyData').addEventListener('click',()=>{try{const d=JSON.parse(editor.value);if(!validateData(d))throw 0;DATA=d;localStorage.setItem(DATA_KEY,JSON.stringify(d));initApp();msg(dataMsg,'✓ データを更新して保存しました。')}catch(e){msg(dataMsg,'✕ JSONの形式が正しくありません。')}});
+    $('exportData').addEventListener('click',()=>{const blob=new Blob([JSON.stringify(DATA,null,2)],{type:'application/json'}),a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='スターメーター分析データ.json';a.click();URL.revokeObjectURL(a.href);msg(dataMsg,'✓ JSONを書き出しました。')});
+    $('importData').addEventListener('click',()=>$('dataFile').click());
+    $('dataFile').addEventListener('change',async e=>{const f=e.target.files[0];if(!f)return;try{editor.value=await f.text();msg(dataMsg,'✓ 読み込みました。「データを更新」で反映してください。')}catch(_){msg(dataMsg,'✕ ファイルを読み込めませんでした。')}e.target.value=''});
+    $('resetData').addEventListener('click',()=>{if(!confirm('元のデータに戻しますか？'))return;localStorage.removeItem(DATA_KEY);DATA=DATA_SOURCE;initApp();editor.value=JSON.stringify(DATA,null,2);msg(dataMsg,'✓ 元のデータに戻しました。')});
 
-$("rank").innerHTML="";
-$("month").innerHTML='<option value="all">全期間</option>';
-DATA.ranks.forEach(r=>{ $("rank").insertAdjacentHTML("beforeend",`<option value="${r}">${rankLabel(r)}</option>`); });
-DATA.months.forEach(m=>{ $("month").insertAdjacentHTML("beforeend",`<option value="${m}">${m}</option>`); });
-
-function render(){
- const rk=$("rank").value, mo=$("month").value;
- const ov=DATA.overall[rk];
- const base=ov.overall;
- const wk=DATA.weekday[rk];
- const mn=DATA.month[rk];
- const dy=DATA.day[rk];
-
- $("overall").textContent=fmt(base);
- $("count").textContent=ov.count.toLocaleString()+"件";
- $("maxVal").textContent=fmt(ov.max);
- $("minVal").textContent=fmt(ov.min);
-
- // 日別傾向チェック（今日の「日付」に対応する統計上の平均を表示。データ期間は2/16〜8/24）
- const now=new Date();
- const todayDay=String(now.getDate());
- const todayVal=dy[todayDay];
- const todayPct=todayVal&&base?pct(todayVal,base):null;
- let level="データ不足", cls="safe", msg="この日のデータが少ないため判断できません。";
- if(todayVal!=null){
-   if(todayPct>=20){level="🔥 高注意";cls="dangerbadge";msg="過去平均よりかなり高い傾向。";}
-   else if(todayPct>=10){level="⚠️ 注意";cls="warn";msg="過去平均より高めの傾向。";}
-   else {level="○ 通常";cls="safe";msg="過去平均と比べて大きな上振れはありません。";}
- }
- $("today").innerHTML=`<div><span class="badge ${cls}">${level}</span></div>
- <div class="big" style="margin-top:8px">${todayVal!=null?fmt(todayVal):"-"}</div>
- <div class="note">${now.getDate()}日（毎月${now.getDate()}日）・このランクの日別平均（2〜8月のデータより算出）<br>${msg}${todayPct!=null?"（総合平均比 "+(todayPct>=0?"+":"")+todayPct+"%）":""}</div>
- <div class="miniinfo">
-   <div>最高曜日：<b>${ov.bestWeekday}曜日</b>（${fmt(ov.bestWeekdayVal)}）</div>
-   <div>最高日：<b>${ov.bestDay}</b>（${fmt(ov.bestDayVal)}）</div>
- </div>`;
-
- // 曜日
- const w=DATA.weekdays.map(k=>[k,wk[k]]).filter(x=>x[1]!=null).sort((a,b)=>b[1]-a[1]);
- const maxW=w.length?w[0][1]:1;
- $("weekday").innerHTML=w.map(([k,v])=>{
-   const p=Math.round(v/maxW*100);
-   const diff=pct(v,base);
-   const badge=diff>=20?`<span class="badge dangerbadge">高注意</span>`:diff>=10?`<span class="badge warn">注意</span>`:"";
-   return `<div class="barrow"><b>${k}</b><div class="bar"><div class="fill" style="width:${p}%"></div></div><span>${fmt(v)} ${badge}</span></div>`;
- }).join("");
-
- // 月平均
- let mm=DATA.months.map(m=>[m,mn[m]]).filter(x=>x[1]!=null);
- if(mo!=="all") mm=mm.filter(x=>x[0]===mo);
- $("monthStats").innerHTML=mm.length?`<table><tr><th>月</th><th>平均値</th><th>総合平均比</th><th>判定</th></tr>`+
- mm.map(([m,v])=>{let diff=pct(v,base);let b=diff>=20?"高注意":diff>=10?"注意":"通常";let c=diff>=20?"dangerbadge":diff>=10?"warn":"safe";return `<tr><td>${m}</td><td>${fmt(v)}</td><td>${diff>=0?"+":""}${diff}%</td><td><span class="badge ${c}">${b}</span></td></tr>`}).join("")+"</table>":"<div class='note'>該当データなし</div>";
-
- // 日別
- $("days").innerHTML=Array.from({length:31},(_,i)=>{
-   const day=String(i+1), v=dy[day];
-   if(v==null)return `<div class="daybox empty"><div class="dayname">${i+1}日</div><div class="num">-</div></div>`;
-   const diff=pct(v,base);
-   const cl=diff>=20?"danger":diff>=10?"high":"";
-   return `<div class="daybox ${cl}"><div class="dayname">${i+1}日</div><div class="num">${fmt(v)}</div>${diff>=20?"<div>🔥</div>":diff>=10?"<div>⚠️</div>":""}</div>`;
- }).join("");
-
- // 全ランク比較
- const compare=DATA.ranks.map(r=>({r,v:DATA.overall[r].overall})).filter(x=>x.v!=null).sort((a,b)=>b.v-a.v);
- const max=compare[0]?.v||1;
- $("rankCompare").innerHTML=compare.map(x=>`<div class="barrow"><b>${rankLabel(x.r)}</b><div class="bar"><div class="fill" style="width:${Math.max(3,x.v/max*100)}%"></div></div><span>${fmt(x.v)}</span></div>`).join("");
-}
-
-$("rank").addEventListener("change",render);
-$("month").addEventListener("change",render);
-$("rank").value="A1";
-render();
-
-
-// 管理機能
-(function(){
- const modal=$("adminModal"), editor=$("dataEditor"), dataMsg=$("dataMsg"), pwMsg=$("pwMsg");
- function msg(el,text){el.textContent=text; setTimeout(()=>{if(el.textContent===text)el.textContent=''},3500)}
- function openAdmin(){
-   editor.value=JSON.stringify(DATA,null,2);
-   modal.style.display='flex';
- }
- $("adminOpen").addEventListener("click",openAdmin);
- $("adminClose").addEventListener("click",()=>modal.style.display='none');
- modal.addEventListener("click",e=>{if(e.target===modal)modal.style.display='none'});
- document.querySelectorAll(".admin-tabs button").forEach(b=>b.addEventListener("click",()=>{
-   document.querySelectorAll(".admin-tabs button").forEach(x=>x.classList.remove("active"));
-   document.querySelectorAll(".admin-panel").forEach(x=>x.classList.remove("active"));
-   b.classList.add("active"); $(b.dataset.tab).classList.add("active");
- }));
- $("applyData").addEventListener("click",()=>{
-   try{
-     const d=JSON.parse(editor.value);
-     if(!validateData(d)) throw new Error("形式");
-     DATA=d; localStorage.setItem(DATA_KEY,JSON.stringify(d));
-     initApp(); render(); msg(dataMsg,"✓ データを更新して保存しました。");
-   }catch(e){msg(dataMsg,"✕ JSONの形式が正しくありません。");}
- });
- $("exportData").addEventListener("click",()=>{
-   const blob=new Blob([JSON.stringify(DATA,null,2)],{type:"application/json"});
-   const a=document.createElement("a"); a.href=URL.createObjectURL(blob);
-   a.download="スターメーター分析データ.json"; a.click(); URL.revokeObjectURL(a.href);
-   msg(dataMsg,"✓ JSONを書き出しました。");
- });
- $("importData").addEventListener("click",()=>$("dataFile").click());
- $("dataFile").addEventListener("change",async e=>{
-   const f=e.target.files[0]; if(!f)return;
-   try{editor.value=await f.text(); msg(dataMsg,"✓ 読み込みました。「データを更新」で反映してください。");}
-   catch(_){msg(dataMsg,"✕ ファイルを読み込めませんでした。");}
-   e.target.value="";
- });
- $("resetData").addEventListener("click",()=>{
-   if(!confirm("元のデータに戻しますか？"))return;
-   localStorage.removeItem(DATA_KEY); DATA=DATA_SOURCE; initApp(); render();
-   editor.value=JSON.stringify(DATA,null,2); msg(dataMsg,"✓ 元のデータに戻しました。");
- });
- $("changePw").addEventListener("click",()=>{
-   const old=$("oldPw").value, n=$("newPw").value, n2=$("newPw2").value;
-   if(old!==currentPassword()){msg(pwMsg,"✕ 現在のパスワードが違います。");return}
-   if(!n || n.length<4){msg(pwMsg,"✕ 新しいパスワードは4文字以上にしてください。");return}
-   if(n!==n2){msg(pwMsg,"✕ 新しいパスワードが一致しません。");return}
-   localStorage.setItem(PW_KEY,n); $("oldPw").value=$("newPw").value=$("newPw2").value="";
-   msg(pwMsg,"✓ パスワードを変更しました。次回から新しいパスワードを使用します。");
- });
- $("resetPw").addEventListener("click",()=>{
-   if(!confirm("初期パスワードに戻しますか？"))return;
-   localStorage.removeItem(PW_KEY); msg(pwMsg,"✓ 初期パスワードに戻しました。");
- });
-})();
-
+    function renderPwList(){
+      const a=getAuth();
+      $('adminPwMask').textContent='管理者パスワード：'+('●'.repeat(Math.max(4,a.admin.length)));
+      $('viewerPwList').innerHTML=a.viewers.length?a.viewers.map((pw,i)=>`<div class="pw-item"><code>閲覧者 ${i+1}：${'●'.repeat(Math.max(4,pw.length))}</code><button data-i="${i}">削除</button></div>`).join(''):'<div class="admin-note">閲覧者パスワードはありません。</div>';
+      document.querySelectorAll('#viewerPwList button').forEach(b=>b.addEventListener('click',()=>{const a=getAuth();a.viewers.splice(+b.dataset.i,1);saveAuth(a);renderPwList();msg(pwMsg,'✓ 閲覧者パスワードを削除しました。')}));
+    }
+    $('changeAdminPw').addEventListener('click',()=>{const a=getAuth(),old=$('adminOldPw').value,n=$('adminNewPw').value,n2=$('adminNewPw2').value;if(old!==a.admin)return msg(pwMsg,'✕ 現在の管理者パスワードが違います。');if(!n||n.length<4)return msg(pwMsg,'✕ 4文字以上で入力してください。');if(n!==n2)return msg(pwMsg,'✕ 新しいパスワードが一致しません。');a.admin=n;saveAuth(a);$('adminOldPw').value=$('adminNewPw').value=$('adminNewPw2').value='';msg(pwMsg,'✓ 管理者パスワードを変更しました。')});
+    $('addViewerPw').addEventListener('click',()=>{const a=getAuth(),n=$('viewerNewPw').value.trim();if(!n||n.length<4)return msg(pwMsg,'✕ 閲覧者パスワードは4文字以上にしてください。');if(n===a.admin||a.viewers.includes(n))return msg(pwMsg,'✕ そのパスワードは既に使用されています。');a.viewers.push(n);saveAuth(a);$('viewerNewPw').value='';renderPwList();msg(pwMsg,'✓ 閲覧者パスワードを追加しました。')});
+    $('resetAuth').addEventListener('click',()=>{if(!confirm('管理者・閲覧者パスワードを初期状態に戻しますか？'))return;localStorage.removeItem(AUTH_KEY);localStorage.removeItem(OLD_PW_KEY);renderPwList();msg(pwMsg,'✓ 初期状態に戻しました。管理者：milklivepore0611 / 閲覧者：milklive')});
+  })();
 }
 </script>
 
@@ -347,31 +354,35 @@ render();
  <div class="admin-box">
   <button class="close-admin" id="adminClose">✕</button>
   <h2>⚙ 管理</h2>
-  <div class="admin-note">ここで変更したデータ・パスワードは、このブラウザに保存されます。別の端末やブラウザには自動同期されません。</div>
+  <div class="admin-note">管理者のみ利用できます。データ・パスワードはこのブラウザに保存されます。</div>
   <div class="admin-tabs">
    <button class="active" data-tab="dataTab">📊 データ更新</button>
-   <button data-tab="pwTab">🔑 パスワード変更</button>
+   <button data-tab="pwTab">🔑 権限・パスワード</button>
   </div>
   <div class="admin-panel active" id="dataTab">
-   <div class="admin-note">現在の分析データをJSON形式で編集できます。更新前に「JSONを書き出す」でバックアップ推奨。外部で作ったJSONを「JSONを読み込む」から選択することもできます。</div>
+   <div class="admin-note">現在の分析データをJSON形式で編集できます。更新前にバックアップ推奨。</div>
    <textarea id="dataEditor" spellcheck="false"></textarea>
    <div class="admin-actions">
-    <button class="primary" id="applyData">データを更新</button>
-    <button id="exportData">JSONを書き出す</button>
-    <button id="importData">JSONを読み込む</button>
-    <button id="resetData">元のデータに戻す</button>
+    <button class="primary" id="applyData">データを更新</button><button id="exportData">JSONを書き出す</button><button id="importData">JSONを読み込む</button><button id="resetData">元のデータに戻す</button>
    </div>
    <input type="file" id="dataFile" accept=".json,application/json" style="display:none">
    <div class="admin-msg" id="dataMsg"></div>
   </div>
   <div class="admin-panel" id="pwTab">
-   <div class="admin-field"><label>現在のパスワード</label><input type="password" id="oldPw" autocomplete="current-password"></div>
-   <div class="admin-field"><label>新しいパスワード</label><input type="password" id="newPw" autocomplete="new-password"></div>
-   <div class="admin-field"><label>新しいパスワード（確認）</label><input type="password" id="newPw2" autocomplete="new-password"></div>
-   <div class="admin-actions"><button class="primary" id="changePw">パスワードを変更</button><button id="resetPw">初期パスワードに戻す</button></div>
+   <div class="admin-field"><label>現在の管理者パスワード</label><input type="password" id="adminOldPw"></div>
+   <div class="admin-field"><label>新しい管理者パスワード</label><input type="password" id="adminNewPw"></div>
+   <div class="admin-field"><label>新しい管理者パスワード（確認）</label><input type="password" id="adminNewPw2"></div>
+   <div class="admin-actions"><button class="primary" id="changeAdminPw">管理者パスワードを変更</button></div>
+   <div class="admin-note" id="adminPwMask" style="margin-top:10px"></div>
+   <hr style="border:0;border-top:1px solid #2d2d32;margin:16px 0">
+   <h3 style="font-size:14px;margin:0 0 8px">👤 閲覧者パスワード</h3>
+   <div class="admin-note">閲覧者は本体ページだけ閲覧できます。管理画面は開けません。</div>
+   <div class="pw-list" id="viewerPwList"></div>
+   <div class="admin-field"><label>追加する閲覧者パスワード</label><input type="password" id="viewerNewPw" placeholder="例：milklive"></div>
+   <div class="admin-actions"><button class="primary" id="addViewerPw">閲覧者パスワードを追加</button><button id="resetAuth">初期権限に戻す</button></div>
    <div class="admin-msg" id="pwMsg"></div>
   </div>
  </div>
-</div>
+</div></div>
 </body>
 </html>
