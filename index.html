@@ -59,6 +59,19 @@ th{color:#aaa;font-weight:600}
 .gate-box button:disabled{opacity:.5;cursor:default}
 .gate-err{color:#ff8793;font-size:12px;margin-top:10px;min-height:16px}
 #app{display:none}
+
+.admin-open{position:fixed;right:14px;bottom:14px;z-index:20;background:#c73b4d;color:#fff;border:0;border-radius:999px;padding:11px 15px;font-weight:800;box-shadow:0 8px 24px #0008;cursor:pointer}
+.admin-modal{position:fixed;inset:0;background:#000b;z-index:1000;display:none;align-items:center;justify-content:center;padding:14px}
+.admin-box{background:#151519;border:1px solid #3b2025;border-radius:16px;width:min(900px,100%);max-height:92vh;overflow:auto;padding:18px}
+.admin-box h2{margin:0 0 6px;font-size:18px}.admin-note{font-size:12px;color:#aaa;line-height:1.6;margin-bottom:12px}
+.admin-tabs{display:flex;gap:7px;margin:10px 0}.admin-tabs button,.admin-actions button{background:#24242a;color:#fff;border:1px solid #444;border-radius:9px;padding:9px 12px;font-weight:700;cursor:pointer}
+.admin-tabs button.active{background:#c73b4d;border-color:#c73b4d}
+.admin-panel{display:none}.admin-panel.active{display:block}
+.admin-box textarea{width:100%;min-height:300px;background:#0f0f12;color:#ddd;border:1px solid #444;border-radius:10px;padding:12px;font-family:ui-monospace,monospace;font-size:12px;resize:vertical}
+.admin-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}.admin-actions button.primary{background:#c73b4d;border-color:#c73b4d}
+.admin-msg{min-height:20px;color:#9ee39e;font-size:12px;margin-top:8px}
+.admin-field{margin:10px 0}.admin-field label{display:block;font-size:12px;color:#aaa;margin-bottom:6px}.admin-field input{margin:0}
+.close-admin{float:right;background:transparent!important;border:0!important;font-size:20px;padding:0!important}
 </style>
 </head>
 <body>
@@ -144,20 +157,37 @@ async function deriveKey(password, saltB64, iterations){
 
 let DATA;
 
+const DEFAULT_PASSWORD = 'milklivepore0611';
+const DATA_KEY = 'star_meter_analysis_data_v2';
+const PW_KEY = 'star_meter_analysis_password_v2';
+
+function currentPassword(){
+  return localStorage.getItem(PW_KEY) || DEFAULT_PASSWORD;
+}
+function savedData(){
+  try { return JSON.parse(localStorage.getItem(DATA_KEY)) || DATA_SOURCE; }
+  catch(e){ return DATA_SOURCE; }
+}
+function validateData(d){
+  if(!d || !Array.isArray(d.ranks) || !Array.isArray(d.months) || !Array.isArray(d.weekdays)) return false;
+  if(!d.overall || !d.month || !d.weekday || !d.day) return false;
+  return d.ranks.every(r => d.overall[r] && d.month[r] && d.weekday[r] && d.day[r]);
+}
 async function tryUnlock(password){
   const btn = document.getElementById('pwBtn');
   const err = document.getElementById('pwErr');
   btn.disabled = true;
   err.textContent = '';
   try {
-    if (password !== 'milklivepore0611') throw new Error('PASSWORD');
-    DATA = DATA_SOURCE;
+    if (password !== currentPassword()) throw new Error('PASSWORD');
+    DATA = savedData();
+    if(!validateData(DATA)) throw new Error('DATA');
     initApp();
     document.getElementById('gate').style.display = 'none';
-    document.getElementById('app').style.display = '';
+    document.getElementById('app').style.display = 'block';
   } catch (e) {
     console.error('Unlock error:', e);
-    err.textContent = e.message === 'PASSWORD' ? 'パスワードが違います。' : '画面の初期化に失敗しました。';
+    err.textContent = e.message === 'PASSWORD' ? 'パスワードが違います。' : 'データの読み込みに失敗しました。管理画面から元のデータに戻してください。';
   } finally {
     btn.disabled = false;
   }
@@ -179,6 +209,8 @@ const fmt = v => v == null ? "-" : Math.round(v).toLocaleString("ja-JP");
 const pct = (v,b) => b ? Math.round((v/b-1)*100) : 0;
 const rankLabel = r => r.replace(/(\d)$/,"+$1");
 
+$("rank").innerHTML="";
+$("month").innerHTML='<option value="all">全期間</option>';
 DATA.ranks.forEach(r=>{ $("rank").insertAdjacentHTML("beforeend",`<option value="${r}">${rankLabel(r)}</option>`); });
 DATA.months.forEach(m=>{ $("month").insertAdjacentHTML("beforeend",`<option value="${m}">${m}</option>`); });
 
@@ -250,7 +282,96 @@ $("month").addEventListener("change",render);
 $("rank").value="A1";
 render();
 
+
+// 管理機能
+(function(){
+ const modal=$("adminModal"), editor=$("dataEditor"), dataMsg=$("dataMsg"), pwMsg=$("pwMsg");
+ function msg(el,text){el.textContent=text; setTimeout(()=>{if(el.textContent===text)el.textContent=''},3500)}
+ function openAdmin(){
+   editor.value=JSON.stringify(DATA,null,2);
+   modal.style.display='flex';
+ }
+ $("adminOpen").addEventListener("click",openAdmin);
+ $("adminClose").addEventListener("click",()=>modal.style.display='none');
+ modal.addEventListener("click",e=>{if(e.target===modal)modal.style.display='none'});
+ document.querySelectorAll(".admin-tabs button").forEach(b=>b.addEventListener("click",()=>{
+   document.querySelectorAll(".admin-tabs button").forEach(x=>x.classList.remove("active"));
+   document.querySelectorAll(".admin-panel").forEach(x=>x.classList.remove("active"));
+   b.classList.add("active"); $(b.dataset.tab).classList.add("active");
+ }));
+ $("applyData").addEventListener("click",()=>{
+   try{
+     const d=JSON.parse(editor.value);
+     if(!validateData(d)) throw new Error("形式");
+     DATA=d; localStorage.setItem(DATA_KEY,JSON.stringify(d));
+     initApp(); render(); msg(dataMsg,"✓ データを更新して保存しました。");
+   }catch(e){msg(dataMsg,"✕ JSONの形式が正しくありません。");}
+ });
+ $("exportData").addEventListener("click",()=>{
+   const blob=new Blob([JSON.stringify(DATA,null,2)],{type:"application/json"});
+   const a=document.createElement("a"); a.href=URL.createObjectURL(blob);
+   a.download="スターメーター分析データ.json"; a.click(); URL.revokeObjectURL(a.href);
+   msg(dataMsg,"✓ JSONを書き出しました。");
+ });
+ $("importData").addEventListener("click",()=>$("dataFile").click());
+ $("dataFile").addEventListener("change",async e=>{
+   const f=e.target.files[0]; if(!f)return;
+   try{editor.value=await f.text(); msg(dataMsg,"✓ 読み込みました。「データを更新」で反映してください。");}
+   catch(_){msg(dataMsg,"✕ ファイルを読み込めませんでした。");}
+   e.target.value="";
+ });
+ $("resetData").addEventListener("click",()=>{
+   if(!confirm("元のデータに戻しますか？"))return;
+   localStorage.removeItem(DATA_KEY); DATA=DATA_SOURCE; initApp(); render();
+   editor.value=JSON.stringify(DATA,null,2); msg(dataMsg,"✓ 元のデータに戻しました。");
+ });
+ $("changePw").addEventListener("click",()=>{
+   const old=$("oldPw").value, n=$("newPw").value, n2=$("newPw2").value;
+   if(old!==currentPassword()){msg(pwMsg,"✕ 現在のパスワードが違います。");return}
+   if(!n || n.length<4){msg(pwMsg,"✕ 新しいパスワードは4文字以上にしてください。");return}
+   if(n!==n2){msg(pwMsg,"✕ 新しいパスワードが一致しません。");return}
+   localStorage.setItem(PW_KEY,n); $("oldPw").value=$("newPw").value=$("newPw2").value="";
+   msg(pwMsg,"✓ パスワードを変更しました。次回から新しいパスワードを使用します。");
+ });
+ $("resetPw").addEventListener("click",()=>{
+   if(!confirm("初期パスワードに戻しますか？"))return;
+   localStorage.removeItem(PW_KEY); msg(pwMsg,"✓ 初期パスワードに戻しました。");
+ });
+})();
+
 }
 </script>
+
+<button class="admin-open" id="adminOpen">⚙ 管理</button>
+<div class="admin-modal" id="adminModal">
+ <div class="admin-box">
+  <button class="close-admin" id="adminClose">✕</button>
+  <h2>⚙ 管理</h2>
+  <div class="admin-note">ここで変更したデータ・パスワードは、このブラウザに保存されます。別の端末やブラウザには自動同期されません。</div>
+  <div class="admin-tabs">
+   <button class="active" data-tab="dataTab">📊 データ更新</button>
+   <button data-tab="pwTab">🔑 パスワード変更</button>
+  </div>
+  <div class="admin-panel active" id="dataTab">
+   <div class="admin-note">現在の分析データをJSON形式で編集できます。更新前に「JSONを書き出す」でバックアップ推奨。外部で作ったJSONを「JSONを読み込む」から選択することもできます。</div>
+   <textarea id="dataEditor" spellcheck="false"></textarea>
+   <div class="admin-actions">
+    <button class="primary" id="applyData">データを更新</button>
+    <button id="exportData">JSONを書き出す</button>
+    <button id="importData">JSONを読み込む</button>
+    <button id="resetData">元のデータに戻す</button>
+   </div>
+   <input type="file" id="dataFile" accept=".json,application/json" style="display:none">
+   <div class="admin-msg" id="dataMsg"></div>
+  </div>
+  <div class="admin-panel" id="pwTab">
+   <div class="admin-field"><label>現在のパスワード</label><input type="password" id="oldPw" autocomplete="current-password"></div>
+   <div class="admin-field"><label>新しいパスワード</label><input type="password" id="newPw" autocomplete="new-password"></div>
+   <div class="admin-field"><label>新しいパスワード（確認）</label><input type="password" id="newPw2" autocomplete="new-password"></div>
+   <div class="admin-actions"><button class="primary" id="changePw">パスワードを変更</button><button id="resetPw">初期パスワードに戻す</button></div>
+   <div class="admin-msg" id="pwMsg"></div>
+  </div>
+ </div>
+</div>
 </body>
 </html>
