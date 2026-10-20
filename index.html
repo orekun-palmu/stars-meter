@@ -131,6 +131,12 @@ th{color:#aaa;font-weight:600}
 .admin-box{padding:12px}
 }
 @media(max-width:700px){.tri{grid-template-columns:1fr}.cards3{grid-template-columns:1fr}.period .row3{grid-template-columns:1fr 1fr}.period .row3 span{display:none}.period .row3 button{grid-column:1/3}}
+
+.evcell{font-size:11px;text-align:left!important;white-space:normal;min-width:96px;color:#ffd36a;line-height:1.4}
+.data-table th.evh{text-align:left}
+.evrow td{background:#211d12}
+.evrow td.nodata{background:#211d12}
+@media(max-width:700px){.evcell{min-width:64px;font-size:10px}}
 </style>
 </head>
 <body>
@@ -218,6 +224,14 @@ th{color:#aaa;font-weight:600}
 </div>
 
 <div class="section">
+<h2>🎪 イベント別の数値傾向（<span id="evRank"></span>）</h2>
+<div class="content">
+<div class="controls" style="margin:0 0 12px"><select id="evFrom"></select><select id="evTo"></select></div>
+<div id="evOut"></div>
+</div>
+</div>
+
+<div class="section">
 <h2>🗓 日別生データ</h2>
 <div class="content">
 <div class="note" id="rawNote"></div>
@@ -242,9 +256,10 @@ th{color:#aaa;font-weight:600}
  <div class="admin-box">
   <button class="close-admin" id="adminClose">✕</button>
   <h2>⚙ 管理</h2>
-  <div class="admin-note">管理者のみ利用できます。データ・パスワードはこのブラウザに保存されます。</div>
+  <div class="admin-note">管理者のみ利用できます。データ・イベント・パスワードはこのブラウザに保存されます。</div>
   <div class="admin-tabs">
    <button class="active" data-tab="dataTab">📊 データ更新</button>
+   <button data-tab="evTab">📅 イベント</button>
    <button data-tab="pwTab">🔑 権限・パスワード</button>
   </div>
   <div class="admin-panel active" id="dataTab">
@@ -255,6 +270,13 @@ th{color:#aaa;font-weight:600}
    </div>
    <input type="file" id="dataFile" accept=".json,application/json" style="display:none">
    <div class="admin-msg" id="dataMsg"></div>
+  </div>
+  <div class="admin-panel" id="evTab">
+   <div class="admin-note">Googleカレンダーの予定を日別データに重ねて表示します。<b>.icsファイルを選ぶ</b>か、欄に貼り付けて取り込めます（.icsの中身／「2026-08-03 イベント名」を1行1件／複数日は「2026-08-03〜2026-08-05 イベント名」）。取り込み後は「日付 タブ イベント名」の一覧になるので、不要な行を消して「反映して保存」してください。</div>
+   <textarea id="evEditor" spellcheck="false" placeholder="2026-08-03&#9;イベント名"></textarea>
+   <div class="admin-actions"><button class="primary" id="evApply">反映して保存</button><button id="evPick">.icsを選ぶ</button><button id="evExport">JSONで書き出す</button><button id="evClear">全て削除</button></div>
+   <input type="file" id="evFile" accept=".ics,text/calendar,text/plain" style="display:none">
+   <div class="admin-msg" id="evMsg"></div>
   </div>
   <div class="admin-panel" id="pwTab">
    <div class="admin-field"><label>現在の管理者パスワード</label><input type="password" id="adminOldPw"></div>
@@ -499,6 +521,143 @@ let SESSION_ROLE=null, DATA=null, ROWS=[], MONTHS=[], MLABEL=k=>k, P={s:'',e:''}
 const $=id=>document.getElementById(id);
 const MQ=window.matchMedia('(max-width:700px)');
 
+/* ---------- イベント（Googleカレンダー） ---------- */
+const EVENTS_SOURCE=[];
+const EVENTS_KEY='star_meter_events_v1';
+const EV_WIN_START='2026-01-01', EV_WIN_END='2026-12-31';
+let EVENTS=[], EV_BY_DATE={};
+const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const pad=n=>String(n).padStart(2,'0');
+const edn=ds=>{const [y,m,d]=ds.split('-').map(Number);return Math.floor(Date.UTC(y,m-1,d)/86400000);};
+const fromEdn=n=>new Date(n*86400000).toISOString().slice(0,10);
+const addDays=(ds,n)=>fromEdn(edn(ds)+n);
+function setEvents(list,save){
+  const seen=new Set();
+  EVENTS=list.filter(x=>x&&/^\d{4}-\d{2}-\d{2}$/.test(x.d)&&typeof x.t==='string'&&x.t.trim())
+    .map(x=>({d:x.d,t:x.t.trim()}))
+    .filter(x=>{const k=x.d+'\t'+x.t;if(seen.has(k))return false;seen.add(k);return true;})
+    .sort((a,b)=>a.d<b.d?-1:a.d>b.d?1:a.t<b.t?-1:1);
+  EV_BY_DATE={};EVENTS.forEach(x=>(EV_BY_DATE[x.d]=EV_BY_DATE[x.d]||[]).push(x.t));
+  if(save)localStorage.setItem(EVENTS_KEY,JSON.stringify(EVENTS));
+}
+function loadEvents(){
+  let list=EVENTS_SOURCE;
+  try{const s=JSON.parse(localStorage.getItem(EVENTS_KEY));if(Array.isArray(s))list=s;}catch(e){}
+  setEvents(list,false);
+}
+const evOf=ds=>EV_BY_DATE[ds]||[];
+const evCell=ds=>`<td class="evcell">${evOf(ds).map(esc).join('<br>')}</td>`;
+const evToText=()=>EVENTS.map(x=>x.d+'\t'+x.t).join('\n');
+
+function icsDate(val){
+  const m=val.trim().match(/^(\d{4})(\d{2})(\d{2})(?:T(\d{2})(\d{2})(\d{2})(Z)?)?$/);
+  if(!m)return null;
+  if(m[4]===undefined)return {d:`${m[1]}-${m[2]}-${m[3]}`,all:true,t:'000000'};
+  let dt=Date.UTC(+m[1],+m[2]-1,+m[3],+m[4],+m[5],+m[6]);
+  if(m[7]==='Z')dt+=9*3600000; // UTC→日本時間
+  const x=new Date(dt);
+  return {d:x.toISOString().slice(0,10),all:false,t:pad(x.getUTCHours())+pad(x.getUTCMinutes())+pad(x.getUTCSeconds())};
+}
+const ICS_DOW=['SU','MO','TU','WE','TH','FR','SA'];
+function expandIcs(ev,out){
+  if(ev.cancel)return;
+  const s=ev.s.d;
+  let end=s;
+  if(ev.e){end=(ev.e.all||ev.e.t==='000000')?addDays(ev.e.d,-1):ev.e.d;if(end<s)end=s;}
+  const span=Math.min(60,edn(end)-edn(s));
+  const starts=[];
+  if(!ev.r){starts.push(s);}
+  else{
+    const r={};ev.r.split(';').forEach(p=>{const i=p.indexOf('=');if(i>0)r[p.slice(0,i).toUpperCase()]=p.slice(i+1);});
+    const itv=Math.max(1,+r.INTERVAL||1), cnt=r.COUNT?+r.COUNT:Infinity;
+    let until=EV_WIN_END;
+    if(r.UNTIL){const u=icsDate(r.UNTIL);if(u&&u.d<until)until=u.d;}
+    const by=r.BYDAY?r.BYDAY.split(',').map(x=>ICS_DOW.indexOf(x.slice(-2))):null;
+    const [sy,sm,sd]=s.split('-').map(Number), s0=edn(s), sw=Math.floor((s0+3)/7), sdow=new Date(s0*86400000).getUTCDay();
+    let n=0;
+    for(let e0=s0;e0<=edn(until)&&n<cnt;e0++){
+      const [y,m,d]=fromEdn(e0).split('-').map(Number), dow=new Date(e0*86400000).getUTCDay();
+      let ok=false;
+      if(r.FREQ==='DAILY')ok=(e0-s0)%itv===0;
+      else if(r.FREQ==='WEEKLY')ok=(Math.floor((e0+3)/7)-sw)%itv===0&&(by?by.includes(dow):dow===sdow);
+      else if(r.FREQ==='MONTHLY')ok=d===sd&&((y-sy)*12+m-sm)%itv===0;
+      else if(r.FREQ==='YEARLY')ok=m===sm&&d===sd&&(y-sy)%itv===0;
+      if(ok){n++;starts.push(fromEdn(e0));}
+    }
+  }
+  starts.forEach(st=>{
+    if(ev.ex.includes(st))return;
+    for(let k=0;k<=span;k++){const d=addDays(st,k);if(d>=EV_WIN_START&&d<=EV_WIN_END)out.push({d,t:ev.t});}
+  });
+}
+function parseICS(txt){
+  const lines=txt.replace(/\r/g,'').replace(/\n[ \t]/g,'').split('\n'),out=[];let ev=null;
+  for(const ln of lines){
+    if(ln==='BEGIN:VEVENT'){ev={ex:[]};continue;}
+    if(ln==='END:VEVENT'){if(ev&&ev.s&&ev.t)expandIcs(ev,out);ev=null;continue;}
+    if(!ev)continue;
+    const i=ln.indexOf(':');if(i<0)continue;
+    const key=ln.slice(0,i),val=ln.slice(i+1),nm=key.split(';')[0].toUpperCase();
+    if(nm==='SUMMARY')ev.t=val.replace(/\\[nN]/g,' ').replace(/\\([,;\\])/g,'$1');
+    else if(nm==='DTSTART')ev.s=icsDate(val);
+    else if(nm==='DTEND')ev.e=icsDate(val);
+    else if(nm==='RRULE')ev.r=val;
+    else if(nm==='EXDATE')val.split(',').forEach(v=>{const x=icsDate(v);if(x)ev.ex.push(x.d);});
+    else if(nm==='STATUS'&&val.trim()==='CANCELLED')ev.cancel=true;
+  }
+  return out;
+}
+function parseEvLines(txt){
+  const out=[];
+  txt.split('\n').forEach(ln=>{
+    const m=ln.trim().match(/^(\d{4})[-\/](\d{1,2})[-\/](\d{1,2})(?:\s*[~〜～]\s*(\d{4})[-\/](\d{1,2})[-\/](\d{1,2}))?\s+(.+)$/);
+    if(!m)return;
+    const a=`${m[1]}-${pad(m[2])}-${pad(m[3])}`,b=m[4]?`${m[4]}-${pad(m[5])}-${pad(m[6])}`:a;
+    for(let k=0;k<=Math.min(60,edn(b)-edn(a));k++)out.push({d:addDays(a,k),t:m[7].trim()});
+  });
+  return out;
+}
+function parseEvText(txt){
+  const t=txt.trim();
+  if(/BEGIN:VCALENDAR|BEGIN:VEVENT/.test(t))return parseICS(t);
+  if(t[0]==='[')return JSON.parse(t);
+  return parseEvLines(t);
+}
+
+function renderEvents(g){
+  const fromEl=$('evFrom'),toEl=$('evTo'),out=$('evOut');
+  if(!fromEl||!fromEl.value)return;
+  $('evRank').textContent=g+'ランク';
+  if(!EVENTS.length){out.innerHTML='<div class="note">イベントがまだ取り込まれていません。右下の「⚙ 管理」→「📅 イベント」から、Googleカレンダーの書き出し（.ics）を取り込んでください。</div>';return;}
+  let a=fromEl.value,b=toEl.value;if(a>b)[a,b]=[b,a];
+  const rows=ROWS.filter(r=>r.mk>=a&&r.mk<=b);
+  const evRows=rows.filter(r=>evOf(r.d).length), plain=rows.filter(r=>!evOf(r.d).length);
+  const baseRows=plain.length?plain:rows;
+  const base=SUBS.map(s=>avgOf(baseRows,g+s));
+  const wb={};WD_ORDER.forEach(w=>{const r=baseRows.filter(x=>x.w===w);wb[w]=SUBS.map((s,i)=>avgOf(r,g+s)??base[i]);});
+  const evAvg=SUBS.map(s=>avgOf(evRows,g+s));
+  let html=`<div class="note">対象：${MLABEL(a)}〜${MLABEL(b)}／数値のある${rows.length}日のうち、イベントあり${evRows.length}日・なし${plain.length}日</div>`;
+  html+='<div class="table-wrap"><table class="data-table" style="margin-top:10px"><thead><tr><th>区分</th>'+SUBS.map(s=>`<th>${g}+${s}</th>`).join('')+'</tr></thead><tbody>'+
+    `<tr><td>イベントあり日の平均</td>${evAvg.map(v=>`<td>${fmt(v)}</td>`).join('')}</tr>`+
+    `<tr><td>イベントなし日の平均</td>${base.map(v=>`<td>${fmt(v)}</td>`).join('')}</tr>`+
+    `<tr class="avgrow"><td>差</td>${evAvg.map((v,i)=>`<td>${pctTxt(pct(v,base[i]))}</td>`).join('')}</tr></tbody></table></div>`;
+  const by={};evRows.forEach(r=>evOf(r.d).forEach(t=>(by[t]=by[t]||[]).push(r)));
+  const list=Object.keys(by).map(t=>{
+    const rs=by[t];
+    const adj=SUBS.map((s,i)=>{
+      const x=rs.map(r=>{const v=r.v[g+s],b0=wb[r.w][i];return Number.isFinite(v)&&b0?(v/b0-1)*100:null;}).filter(v=>v!=null);
+      return x.length?Math.round(x.reduce((p,c)=>p+c,0)/x.length):null;
+    });
+    const m=meanPct(adj);
+    return {t,n:rs.length,adj,m:m==null?null:Math.round(m)};
+  }).sort((p,q)=>(q.m??-1e9)-(p.m??-1e9));
+  const cl=v=>v==null?'':v>=10?'green':v<=-10?'red':'';
+  html+='<div class="table-wrap" style="margin-top:14px"><table class="data-table"><thead><tr><th>イベント</th><th>日数</th>'+SUBS.map(s=>`<th>+${s}</th>`).join('')+'<th>平均</th></tr></thead><tbody>'+
+    list.map(x=>`<tr><td style="white-space:normal;text-align:left">${esc(x.t)}${x.n===1?' <span class="smallnote">※1日のみ</span>':''}</td><td>${x.n}日</td>${x.adj.map(v=>`<td class="${cl(v)}">${v==null?'-':pctTxt(v)}</td>`).join('')}<td class="${cl(x.m)}"><b>${x.m==null?'-':pctTxt(x.m)}</b></td></tr>`).join('')+'</tbody></table></div>';
+  html+='<div class="note" style="margin-top:8px">％は「イベントなし日の同じ曜日の平均」と比べた増減です（曜日の影響を除いた比較）。±10%以上を色付けしています。1日だけのイベントや、同じ日に複数イベントが重なる日は、偶然や他イベントの影響が混ざるため参考値です。</div>';
+  out.innerHTML=html;
+}
+
 /* ---------- 認証 ---------- */
 function getAuth(){
   try{const s=JSON.parse(localStorage.getItem(AUTH_KEY));if(s&&typeof s.admin==='string'&&Array.isArray(s.viewers))return s;}catch(e){}
@@ -616,6 +775,7 @@ function renderAdmin(g,rows){
     return `<div class="daybox ${cl}"><div class="dayname">${d}日</div><div class="num">${v.map((x,i)=>`<div><i>+${i}</i>${fmt(x)}</div>`).join('')}</div>${m>=20?'<div>🔥</div>':m>=10?'<div>⚠️</div>':''}</div>`;
   }).join('');
   renderRaw();
+  renderEvents(g);
   renderLines(g,rows);
 }
 function renderRaw(){
@@ -627,20 +787,20 @@ function renderRaw(){
   const byD={};ROWS.forEach(r=>{if(r.mk===mk)byD[r.dd]=r;});
   $('rawNote').innerHTML=`データ期間：${first.replace(/-/g,'/')}〜${last.replace(/-/g,'/')}。期間内で原本にデータが無い日は「<b>【データなし】</b>」、記録できなかった値は「<b>記録なし</b>」と表示します（平均には含めません）。`;
   const ncol=groups.length*3;
-  let head='<thead><tr><th rowspan="2">日付</th><th rowspan="2">曜日</th>'+groups.map(G=>`<th class="grp" colspan="3">${G}ランク</th>`).join('')+'</tr><tr>'+groups.map(G=>SUBS.map((s,i)=>`<th class="${i===0?'gl':''}">+${s}</th>`).join('')).join('')+'</tr></thead>';
+  let head='<thead><tr><th rowspan="2">日付</th><th rowspan="2">曜日</th><th rowspan="2" class="evh">イベント</th>'+groups.map(G=>`<th class="grp" colspan="3">${G}ランク</th>`).join('')+'</tr><tr>'+groups.map(G=>SUBS.map((s,i)=>`<th class="${i===0?'gl':''}">+${s}</th>`).join('')).join('')+'</tr></thead>';
   let body='';
   for(let d=1;d<=nd;d++){
     const ds=`${mk}-${String(d).padStart(2,'0')}`;
     if(ds<first||ds>last)continue;
     const wd=WD_JS[new Date(y,m-1,d).getDay()];
     if(byD[d]){
-      body+=`<tr><td>${m}/${d}</td><td>${wd}</td>`+groups.map(G=>SUBS.map((s,i)=>{const x=byD[d].v[G+s];return Number.isFinite(x)?`<td class="${i===0?'gl':''}">${x.toLocaleString('ja-JP')}</td>`:`<td class="nodata ${i===0?'gl':''}">記録なし</td>`;}).join('')).join('')+'</tr>';
+      body+=`<tr class="${evOf(ds).length?'evrow':''}"><td>${m}/${d}</td><td>${wd}</td>${evCell(ds)}`+groups.map(G=>SUBS.map((s,i)=>{const x=byD[d].v[G+s];return Number.isFinite(x)?`<td class="${i===0?'gl':''}">${x.toLocaleString('ja-JP')}</td>`:`<td class="nodata ${i===0?'gl':''}">記録なし</td>`;}).join('')).join('')+'</tr>';
     }else{
-      body+=`<tr><td>${m}/${d}</td><td>${wd}</td><td class="nodata" colspan="${ncol}">【データなし】</td></tr>`;
+      body+=`<tr class="${evOf(ds).length?'evrow':''}"><td>${m}/${d}</td><td>${wd}</td>${evCell(ds)}<td class="nodata" colspan="${ncol}">【データなし】</td></tr>`;
     }
   }
   const mr=ROWS.filter(r=>r.mk===mk);
-  body+=`<tr class="avgrow"><td>${MLABEL(mk)}</td><td>平均</td>`+groups.map(G=>SUBS.map((s,i)=>`<td class="${i===0?'gl':''}">${fmt(avgOf(mr,G+s))}</td>`).join('')).join('')+'</tr>';
+  body+=`<tr class="avgrow"><td>${MLABEL(mk)}</td><td>平均</td><td></td>`+groups.map(G=>SUBS.map((s,i)=>`<td class="${i===0?'gl':''}">${fmt(avgOf(mr,G+s))}</td>`).join('')).join('')+'</tr>';
   $('rawTable').innerHTML=head+'<tbody>'+body+'</tbody>';
 }
 function lineSvg(title,rows,key,color){
@@ -650,7 +810,7 @@ function lineSvg(title,rows,key,color){
   const t0=new Date(rows[0].y,rows[0].m-1,rows[0].dd).getTime();
   const DAY=86400000;
   const idx=r=>Math.round((new Date(r.y,r.m-1,r.dd).getTime()-t0)/DAY);
-  const pts=rows.map(r=>({i:idx(r),v:r.v[key],d:`${r.m}/${r.dd}`}));
+  const pts=rows.map(r=>({i:idx(r),v:r.v[key],d:`${r.m}/${r.dd}`,ev:evOf(r.d)}));
   const N=pts[pts.length-1].i+1;
   const W=mob?480:900,H=260,L=mob?56:62,R=mob?12:20,T=18,B=34,iw=W-L-R,ih=H-T-B;
   const vs=pts.map(p=>p.v),mx=Math.max(...vs),mn=Math.min(...vs),rg=(mx-mn)||1;
@@ -659,7 +819,7 @@ function lineSvg(title,rows,key,color){
   pts.forEach((p,k)=>{if(k>0&&p.i!==pts[k-1].i+1){segs.push(cur);cur=[];}cur.push(p);});
   segs.push(cur);
   const lines=segs.filter(s=>s.length>1).map(s=>`<polyline points="${s.map(p=>x(p.i).toFixed(1)+','+y(p.v).toFixed(1)).join(' ')}" fill="none" stroke="${color}" stroke-width="2" stroke-linejoin="round"/>`).join('');
-  const dots=pts.map(p=>`<circle cx="${x(p.i).toFixed(1)}" cy="${y(p.v).toFixed(1)}" r="${N>120?2:3}" fill="${color}"><title>${p.d}: ${fmt(p.v)}</title></circle>`).join('');
+  const dots=pts.map(p=>{const e=p.ev&&p.ev.length;return `<circle cx="${x(p.i).toFixed(1)}" cy="${y(p.v).toFixed(1)}" r="${e?5:(N>120?2:3)}" fill="${color}"${e?' stroke="#fff" stroke-width="2"':''}><title>${p.d}: ${fmt(p.v)}${e?'\n'+p.ev.map(esc).join(' / '):''}</title></circle>`;}).join('');
   const grid=[0,.25,.5,.75,1].map(t=>{const yy=T+ih*t;return `<line x1="${L}" y1="${yy}" x2="${W-R}" y2="${yy}" class="gridline"/><text x="${L-8}" y="${yy+4}" text-anchor="end" class="axistext">${fmt(mx-rg*t)}</text>`;}).join('');
   const step=Math.max(1,Math.ceil(N/8));
   const labs=pts.filter((p,k)=>k%Math.ceil(pts.length/(mob?5:8))===0||k===pts.length-1).map(p=>`<text x="${x(p.i)}" y="${H-10}" text-anchor="middle" class="axistext">${p.d}</text>`).join('');
@@ -667,7 +827,7 @@ function lineSvg(title,rows,key,color){
 }
 function renderLines(g,rows){
   if(!rows.length){$('lineCharts').innerHTML='<div class="note">表示できるデータがありません。</div>';return;}
-  $('lineCharts').innerHTML='<div class="note" style="margin-bottom:8px">横軸：日付（データの無い日は線が途切れます）　縦軸：値（+0/+1/+2それぞれ別スケール）</div>'+
+  $('lineCharts').innerHTML='<div class="note" style="margin-bottom:8px">横軸：日付（データの無い日は線が途切れます）　縦軸：値（+0/+1/+2それぞれ別スケール）　白い輪＝イベントのある日（点にカーソル／タップで名前表示）</div>'+
     SUBS.map(s=>lineSvg(`${g}+${s}`,rows,g+s,SUBCOL[s])).join('');
 }
 
@@ -691,7 +851,7 @@ function setupRawGroup(){
   $('rawGroup').value=(cur==='all'&&!MQ.matches)?'all':'sel';
 }
 function initApp(){
-  prep();
+  prep();loadEvents();
   const prev=$('rank').value;
   $('rank').innerHTML=GROUPS.map(g=>`<option value="${g}">${g}ランク（${g}+0〜+2）</option>`).join('');
   $('rank').value=GROUPS.includes(prev)?prev:'A';
@@ -705,6 +865,8 @@ function initApp(){
   if(SESSION_ROLE==='admin'){
     $('rawMonth').innerHTML=mo;$('rawMonth').value=MONTHS[MONTHS.length-1];
     setupRawGroup();
+    $('evFrom').innerHTML=mo;$('evTo').innerHTML=mo;
+    $('evFrom').value=MONTHS.includes('2026-08')?'2026-08':MONTHS[0];$('evTo').value=MONTHS[MONTHS.length-1];
   }else{
     $('adminArea').style.display='none';
     ['today','days','rawTable','lineCharts','rawNote'].forEach(id=>$(id).innerHTML='');
@@ -745,10 +907,42 @@ const onMQ=()=>{if(!DATA||$('app').style.display!=='block')return;setupRawGroup(
 if(MQ.addEventListener)MQ.addEventListener('change',onMQ);else if(MQ.addListener)MQ.addListener(onMQ);
 $('rawGroup').addEventListener('change',renderRaw);
 
+(function eventsAdmin(){
+  const ed_=$('evEditor'),m_=$('evMsg');
+  const msg=t=>{m_.textContent=t;};
+  window.fillEvEditor=()=>{ed_.value=evToText();};
+  function apply(txt){
+    let list;
+    try{list=parseEvText(txt);}catch(e){return msg('✕ 読み取れませんでした。.icsの内容、または「2026-08-03 イベント名」（1行1件）で入力してください。');}
+    if(!list.length)return msg('✕ 2026年内のイベントが見つかりませんでした。形式をご確認ください。');
+    setEvents(list,true);ed_.value=evToText();render();
+    const d=EVENTS.map(x=>x.d);
+    msg(`✓ ${EVENTS.length}件（${d[0]}〜${d[d.length-1]}）を保存しました。`);
+  }
+  $('evApply').addEventListener('click',()=>{if(SESSION_ROLE==='admin')apply(ed_.value);});
+  $('evPick').addEventListener('click',()=>$('evFile').click());
+  $('evFile').addEventListener('change',async e=>{
+    const f=e.target.files[0];if(!f||SESSION_ROLE!=='admin')return;
+    try{apply(await f.text());}catch(_){msg('✕ ファイルを読み込めませんでした。');}
+    e.target.value='';
+  });
+  $('evExport').addEventListener('click',()=>{
+    const blob=new Blob([JSON.stringify(EVENTS)],{type:'application/json'}),a=document.createElement('a');
+    a.href=URL.createObjectURL(blob);a.download='イベント一覧.json';a.click();URL.revokeObjectURL(a.href);
+    msg('✓ JSONを書き出しました。');
+  });
+  $('evClear').addEventListener('click',()=>{
+    if(!confirm('取り込んだイベントを全て削除しますか？'))return;
+    localStorage.removeItem(EVENTS_KEY);setEvents(EVENTS_SOURCE,false);ed_.value=evToText();render();msg('✓ 削除しました。');
+  });
+  $('evFrom').addEventListener('change',()=>renderEvents($('rank').value));
+  $('evTo').addEventListener('change',()=>renderEvents($('rank').value));
+})();
+
 (function admin(){
   const modal=$('adminModal'),editor=$('dataEditor'),dataMsg=$('dataMsg'),pwMsg=$('pwMsg');
   const msg=(el,t)=>{el.textContent=t;setTimeout(()=>{if(el.textContent===t)el.textContent='';},3500);};
-  function openAdmin(){if(SESSION_ROLE!=='admin')return;editor.value=dataToText(DATA);renderPwList();modal.style.display='flex';}
+  function openAdmin(){if(SESSION_ROLE!=='admin')return;editor.value=dataToText(DATA);if(window.fillEvEditor)fillEvEditor();renderPwList();modal.style.display='flex';}
   $('adminOpen').addEventListener('click',openAdmin);
   $('adminClose').addEventListener('click',()=>modal.style.display='none');
   modal.addEventListener('click',e=>{if(e.target===modal)modal.style.display='none';});
